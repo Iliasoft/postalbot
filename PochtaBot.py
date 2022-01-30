@@ -62,6 +62,7 @@ MESSAGE_ARCHIVED_SHIPMENT = "This shipment has been delivered, try again"
 MESSAGE_INVALID_SHIPMENT = "Can't find this shipment id, try again"
 MESSAGE_INVALID_SHIPMENT_FORMAT = "Please re-enter, shipment id must be 13-14 symbols"
 MESSAGE_GENERAL_ERROR = "Error processing request, try again"
+MESSAGE_STATUS_UPDATE = "Status update for: "
 BUTTON_AUTO_NOTIFICATION_ON = "Automatic notifications are ON"
 BUTTON_AUTO_NOTIFICATION_OFF = "Automatic notifications are OFF"
 
@@ -218,7 +219,7 @@ def handle_text(message):
 def schedule_checker():
     while True:
         schedule.run_pending()
-        sleep(5)# unload CPU between schedule runs
+        sleep(1)  # unload CPU between schedule runs
 
 
 # this procedure checks if there is update to shipment registered in DB
@@ -239,15 +240,15 @@ def automated_notification_procedure():
 
                     if shipment_info.events[-1][0] != non_delivered_shipment.last_event or \
                             shipment_info.events[-1][4] != non_delivered_shipment.last_event_result:
-                        answer = get_shipment_description(shipment_info, 0)
-                        non_delivered_shipments.last_event = shipment_info.events[-1][0]
-                        non_delivered_shipments.last_event_result = shipment_info.events[-1][4]
+                        answer = MESSAGE_STATUS_UPDATE + str(non_delivered_shipment.barcode) + "\n" + get_shipment_description(shipment_info, 0)
+                        non_delivered_shipment.last_event = shipment_info.events[-1][0]
+                        non_delivered_shipment.last_event_result = shipment_info.events[-1][4]
 
-                        # as a result of above code some items may becime "delivered",
+                        # as a result of above code some items may become "delivered",
                         # so we need to hide them so we have to redraw buttons
-                        markup = draw_buttons(chat_id.chat.id)
+                        markup = draw_buttons(chat_id)
 
-                        bot.send_message(chat_id, answer, markup)
+                        bot.send_message(chat_id, answer, reply_markup=markup)
 
     except Exception as e:
         print("Exception in Auto Notification Procedure", e)
