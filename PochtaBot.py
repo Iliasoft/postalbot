@@ -1,12 +1,12 @@
 import telebot
+import RussianPostAPI
+import ShipmentInfoParser
+import schedule
 from telebot import types
 from pony.orm import *
-import RussianPostAPI
 from RussianPostAPI import RussianPostAPI
-import ShipmentInfoParser
 from ShipmentInfoParser import ShipmentInfoParser
 from time import sleep
-import schedule
 from threading import Thread
 from sys import argv
 
@@ -37,9 +37,9 @@ class Configuration(db.Entity):
 
 db.generate_mapping(create_tables=False)
 
-# read configuration parameters from DB
+# read bot configuration parameters from DB
 with db_session:
-    # no try block - if this fails we cant continue
+    # no try block - if this fails we can't continue
     CFG_BOT_ID = Configuration[1].value
     CFG_POSTAL_API_KEY = Configuration[2].value
     CFG_POSTAL_API_PASS = Configuration[3].value
@@ -47,6 +47,8 @@ with db_session:
     CFG_MAX_BUTTONS_TO_SHOW = int(Configuration[5].value)
 
 
+# I used this method abstraction layer instead of str(shipment) directly
+# later I may add here more sophisticated logic
 def get_shipment_description(shipment_info, last_event):
     # presence of last_event is reserved for future use
     return str(shipment_info)
@@ -88,10 +90,11 @@ def draw_buttons(chat_id):
     try:
         with db_session:
             # generate buttons for all non-delivered shipments we have in DB
+            # note: delivered shipments have shipment.last_event == 2
             non_delivered_shipments = select(
                 shipment for shipment in Shipment if shipment.chat == chat_id and shipment.last_event != 2
             )
-            buttons_counter = 2 # two buttoms are always on the screen
+            buttons_counter = 2  # two buttons are always on the screen
             for non_delivered_shipment in non_delivered_shipments:
 
                 # do not clutter entire screen with buttons
@@ -125,12 +128,14 @@ def handle_text(message):
 
             if user_entry == COMMAND_LIST_READY_FOR_COLLECTION:
 
-                # we will find shipments that are registered in DB but not marked as arrived/delivered
+                # we will find shipments that are registered in DB but not yet marked as arrived/delivered
+                # arrived to post office have shipment.last_event == 8 and shipment.last_event_result == 2
+                # delivered shipments have shipment.last_event == 2
                 shipments_to_check_for_arrival = select(
                     shipment for shipment in Shipment if shipment.chat == message.chat.id and \
                     (shipment.last_event != 2 and not (shipment.last_event == 8 and shipment.last_event_result == 2))
                 )
-                # and will request Russian Post for their up-to-date status and commit this updated status to DB
+                # and will request Russian Post for their up-to-date statuses and save updated status to DB
                 for shipment_db_record in shipments_to_check_for_arrival:
                     shipment_xml = RussianPostAPI.get_shipment_data(
                         shipment_db_record.barcode, CFG_POSTAL_API_KEY, CFG_POSTAL_API_PASS
@@ -141,6 +146,7 @@ def handle_text(message):
 
                 # now we have uo-to-date status of arrival in the DB
                 # reading it from the DB
+                # arrived to post office: shipment.last_event == 8 and shipment.last_event_result == 2
                 arrived_shipments = select(
                     shipment for shipment in Shipment if shipment.chat == message.chat.id and shipment.last_event == 8 \
                     and shipment.last_event_result == 2
@@ -161,7 +167,7 @@ def handle_text(message):
                     auto_notified_chats.remove(message.chat.id)
                 answer = BUTTON_AUTO_NOTIFICATION_OFF
 
-            elif user_entry and 13 <= len(user_entry) <= 14:
+            elif user_entry and (13 <= len(user_entry) <= 14):  # correct barcode lengths per API are 13 and 14 symbols
 
                 barcode = user_entry
                 shipment_db_record = Shipment.get(barcode=barcode, chat=message.chat.id)
@@ -179,6 +185,7 @@ def handle_text(message):
                     shipment_xml = RussianPostAPI.get_shipment_data(barcode, CFG_POSTAL_API_KEY, CFG_POSTAL_API_PASS)
                     shipment_info = ShipmentInfoParser.parse_xml(shipment_xml)
 
+                    # collected shipments have shipment_info.events[-1][0] == 2
                     if shipment_info and shipment_info.events[-1][0] == 2:
                         # Russian post says is has been collected - nothing to track
                         answer = MESSAGE_ARCHIVED_SHIPMENT
@@ -215,14 +222,15 @@ def handle_text(message):
     markup = draw_buttons(message.chat.id)
     bot.send_message(message.chat.id, answer, reply_markup=markup)
 
-
+# just keep the schedule running
 def schedule_checker():
     while True:
         schedule.run_pending()
         sleep(1)  # unload CPU between schedule runs
 
 
-# this procedure checks if there is update to shipment registered in DB
+# this procedure checks for updates to shipment registered in DB
+# and if there are changes it pushes status update message to associated user
 def automated_notification_procedure():
     try:
         with db_session:
@@ -270,5 +278,6 @@ while True:
 
     except Exception as e:
         print("Message polling has restarted with the following reason:", e)
+
         if DEBUG:
             raise e
